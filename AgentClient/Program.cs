@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -9,7 +10,6 @@ namespace AgentClient
 {
     internal static class Program
     {
-        // Replace with your server URL if different
         private static readonly Uri ServerEndpoint =
             new Uri("https://pc-admin-server.onrender.com/api/agent/status");
 
@@ -17,28 +17,36 @@ namespace AgentClient
 
         private static DateTimeOffset _allowedUntil = DateTimeOffset.MaxValue;
         private static DateTimeOffset _lastContactOk = DateTimeOffset.MinValue;
-        private static DateTimeOffset? _lockedAt = null;
+
+        private const string AdminPassword = "JennyBabe"; // TODO: move to secure storage
+        private const string LogFile = "agent.log";
+        private static readonly object LogLock = new();
+
+        private static void Log(string msg)
+        {
+            try
+            {
+                lock (LogLock)
+                {
+                    File.AppendAllText(LogFile, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {msg}\r\n");
+                }
+            }
+            catch { /* ignore */ }
+        }
 
         private static async Task Main(string[] args)
         {
-            Console.Title = "AgentClient";
-            Console.WriteLine("[Agent] Starting...");
-
-            // Manual test hotkeys
-            _ = Task.Run(async () =>
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
             {
-                Console.WriteLine("[Agent] Press 'L' to LOCK, 'U' to UNLOCK");
-                while (true)
-                {
-                    if (Console.KeyAvailable)
-                    {
-                        var k = Console.ReadKey(true).Key;
-                        if (k == ConsoleKey.L) LockScreen.Show("admin123");
-                        if (k == ConsoleKey.U) LockScreen.Hide();
-                    }
-                    await Task.Delay(50);
-                }
-            });
+                try { File.WriteAllText("agent_crash.log", e.ExceptionObject?.ToString() ?? "null"); } catch {}
+            };
+            TaskScheduler.UnobservedTaskException += (s, e) =>
+            {
+                try { File.AppendAllText("agent_crash.log", "\n" + e.Exception); } catch {}
+                e.SetObserved();
+            };
+
+            Log("Agent starting...");
 
             string machineName = Environment.MachineName;
             string os = RuntimeInformation.OSDescription;
@@ -57,7 +65,7 @@ namespace AgentClient
                 };
 
                 string json = JsonSerializer.Serialize(status);
-                Console.WriteLine("[Agent] Status: " + json);
+                Log("[Status] " + json);
 
                 bool sent = false;
                 bool requireLock = false;
@@ -67,17 +75,30 @@ namespace AgentClient
                     using var content = new StringContent(json, Encoding.UTF8, "application/json");
                     var resp = await Http.PostAsync(ServerEndpoint, content);
                     var body = await resp.Content.ReadAsStringAsync();
-                    Console.WriteLine($"[Agent] Server: {(int)resp.StatusCode} {body}");
+                    Log($"[Server] {(int)resp.StatusCode} {body}");
 
-                    if (resp.IsSuccessStatusCode)
+                    if (resp.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(body))
                     {
-                        var doc = JsonDocument.Parse(body);
-                        var policy = doc.RootElement.GetProperty("policy");
-                        var auStr = policy.GetProperty("allowedUntil").GetString();
-                        requireLock = policy.GetProperty("requireLock").GetBoolean();
-
-                        if (DateTimeOffset.TryParse(auStr, out var au))
-                            _allowedUntil = au;
+                        try
+                        {
+                            using var doc = JsonDocument.Parse(body);
+                            if (doc.RootElement.TryGetProperty("policy", out var policy))
+                            {
+                                if (policy.TryGetProperty("allowedUntil", out var auEl) &&
+                                    DateTimeOffset.TryParse(auEl.GetString(), out var au))
+                                {
+                                    _allowedUntil = au;
+                                }
+                                if (policy.TryGetProperty("requireLock", out var rlEl))
+                                {
+                                    requireLock = rlEl.GetBoolean();
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Log("[Parse warning] " + ex.Message);
+                        }
 
                         _lastContactOk = now;
                         sent = true;
@@ -85,13 +106,13 @@ namespace AgentClient
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("[Agent] Send error: " + ex.Message);
+                    Log("[Send error] " + ex.Message);
                 }
 
                 if (!sent)
                 {
                     var offlineFor = now - _lastContactOk;
-                    Console.WriteLine($"[Agent] Offline approx: {offlineFor.TotalSeconds:F0}s");
+                    Log($"[Offline] approx {offlineFor.TotalSeconds:F0}s");
                 }
 
                 // Auto-lock by policy
@@ -99,18 +120,16 @@ namespace AgentClient
 
                 if (shouldLock && !LockScreen.IsShown)
                 {
-                    Console.WriteLine("[Agent] Policy -> SHOW lock screen");
-                    LockScreen.Show("admin123", "Policy: access time finished");
-                    _lockedAt = now;
+                    Log("[Policy] SHOW lock screen");
+                    LockScreen.Show(AdminPassword, "Policy: access time finished");
                 }
                 else if (!shouldLock && LockScreen.IsShown)
                 {
-                    Console.WriteLine("[Agent] Policy -> HIDE lock screen");
+                    Log("[Policy] HIDE lock screen");
                     LockScreen.Hide();
-                    _lockedAt = null;
                 }
 
-                await Task.Delay(TimeSpan.FromSeconds(5));
+                await Task.Delay(TimeSpan.FromSeconds(1));
             }
         }
     }

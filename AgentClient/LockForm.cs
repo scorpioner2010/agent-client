@@ -3,11 +3,16 @@ using System.Windows.Forms;
 
 namespace AgentClient
 {
+    /// <summary>
+    /// Fullscreen top-most lock window with password box.
+    /// Hidden from Alt+Tab and ignores Alt+F4/system close.
+    /// </summary>
     public class LockForm : Form
     {
         private readonly string _password;
         private readonly TextBox _tb;
         private readonly Button _btn;
+        private bool _allowClose = false;
 
         public LockForm(string password, string message = "Your time has expired")
         {
@@ -85,10 +90,22 @@ namespace AgentClient
             _btn.Click += (_, __) => TryUnlock();
             _tb.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { TryUnlock(); e.Handled = true; } };
 
+            // Block Esc / Alt / Ctrl within our window
             KeyDown += (_, e) =>
             {
                 if (e.KeyCode == Keys.Escape || e.Alt || e.Control) e.Handled = true;
             };
+        }
+
+        /// <summary>Hide from Alt+Tab.</summary>
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.ExStyle |= 0x80; // WS_EX_TOOLWINDOW
+                return cp;
+            }
         }
 
         protected override void OnShown(System.EventArgs e)
@@ -105,10 +122,28 @@ namespace AgentClient
             base.OnFormClosed(e);
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            // Ignore Alt+F4 / system close unless we explicitly allow it
+            if (!_allowClose)
+            {
+                e.Cancel = true;
+                return;
+            }
+            base.OnFormClosing(e);
+        }
+
+        public void ForceClose()
+        {
+            _allowClose = true;
+            Close();
+        }
+
         private void TryUnlock()
         {
             if (_tb.Text == _password)
             {
+                _allowClose = true;
                 DialogResult = DialogResult.OK;
                 Close();
             }

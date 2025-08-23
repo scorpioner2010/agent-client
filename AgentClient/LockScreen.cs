@@ -46,7 +46,11 @@ namespace AgentClient
             lock (Sync)
             {
                 if (!IsShown || _form == null) return;
-                try { _form.Invoke(new Action(() => _form.Close())); } catch { /* ignore */ }
+                try
+                {
+                    _form.Invoke(new Action(() => _form.ForceClose()));
+                }
+                catch { /* ignore */ }
             }
         }
     }
