@@ -12,7 +12,7 @@ namespace AgentClient
 
         public static bool IsShown { get; private set; }
 
-        public static void Show(string password, string message = "Ваш час закінчився")
+        public static void Show(string password, string message = "Your time has expired")
         {
             lock (Sync)
             {

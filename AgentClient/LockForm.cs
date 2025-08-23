@@ -3,14 +3,13 @@ using System.Windows.Forms;
 
 namespace AgentClient
 {
-    // Повноекранне топове вікно з полем пароля
     public class LockForm : Form
     {
         private readonly string _password;
         private readonly TextBox _tb;
         private readonly Button _btn;
 
-        public LockForm(string password, string message = "Ваш час закінчився")
+        public LockForm(string password, string message = "Your time has expired")
         {
             _password = password;
 
@@ -34,7 +33,7 @@ namespace AgentClient
 
             var lbl = new Label
             {
-                Text = "Адмін пароль:",
+                Text = "Admin password:",
                 Font = new Font("Segoe UI", 16),
                 AutoSize = true,
                 Margin = new Padding(0, 0, 10, 0)
@@ -49,7 +48,7 @@ namespace AgentClient
 
             _btn = new Button
             {
-                Text = "Розблокувати",
+                Text = "Unlock",
                 Font = new Font("Segoe UI", 14),
                 AutoSize = true
             };
@@ -86,7 +85,6 @@ namespace AgentClient
             _btn.Click += (_, __) => TryUnlock();
             _tb.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { TryUnlock(); e.Handled = true; } };
 
-            // блокуємо ESC/Alt/Ctrl у нашому вікні
             KeyDown += (_, e) =>
             {
                 if (e.KeyCode == Keys.Escape || e.Alt || e.Control) e.Handled = true;

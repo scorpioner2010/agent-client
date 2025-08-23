@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Diagnostics;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -10,20 +9,22 @@ namespace AgentClient
 {
     internal static class Program
     {
-        // Якщо зміниш домен/порт — підстав свій
-        private static readonly Uri ServerEndpoint = new Uri("https://pc-admin-server.onrender.com/api/agent/status");
-        private static readonly HttpClient Http = new HttpClient() { Timeout = TimeSpan.FromSeconds(5) };
+        // Replace with your server URL if different
+        private static readonly Uri ServerEndpoint =
+            new Uri("https://pc-admin-server.onrender.com/api/agent/status");
 
-        private static DateTimeOffset _allowedUntil = DateTimeOffset.MaxValue;   // останній дедлайн із сервера
-        private static DateTimeOffset _lastContactOk = DateTimeOffset.MinValue;  // коли востаннє успішно дістався сервера
-        private static DateTimeOffset? _lockedAt = null;                          // коли показали лок-екран
+        private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(5) };
+
+        private static DateTimeOffset _allowedUntil = DateTimeOffset.MaxValue;
+        private static DateTimeOffset _lastContactOk = DateTimeOffset.MinValue;
+        private static DateTimeOffset? _lockedAt = null;
 
         private static async Task Main(string[] args)
         {
             Console.Title = "AgentClient";
             Console.WriteLine("[Agent] Starting...");
 
-            // Тест-клавіші: L — LOCK, U — UNLOCK
+            // Manual test hotkeys
             _ = Task.Run(async () =>
             {
                 Console.WriteLine("[Agent] Press 'L' to LOCK, 'U' to UNLOCK");
@@ -76,9 +77,7 @@ namespace AgentClient
                         requireLock = policy.GetProperty("requireLock").GetBoolean();
 
                         if (DateTimeOffset.TryParse(auStr, out var au))
-                        {
                             _allowedUntil = au;
-                        }
 
                         _lastContactOk = now;
                         sent = true;
@@ -95,13 +94,13 @@ namespace AgentClient
                     Console.WriteLine($"[Agent] Offline approx: {offlineFor.TotalSeconds:F0}s");
                 }
 
-                // --- АВТО-ЛОК ЗА ПОЛІТИКОЮ ---
+                // Auto-lock by policy
                 bool shouldLock = requireLock || now >= _allowedUntil;
 
                 if (shouldLock && !LockScreen.IsShown)
                 {
                     Console.WriteLine("[Agent] Policy -> SHOW lock screen");
-                    LockScreen.Show("admin123", "Політика: доступ завершено");
+                    LockScreen.Show("admin123", "Policy: access time finished");
                     _lockedAt = now;
                 }
                 else if (!shouldLock && LockScreen.IsShown)
@@ -110,9 +109,8 @@ namespace AgentClient
                     LockScreen.Hide();
                     _lockedAt = null;
                 }
-                // --- кінець автолоку ---
 
-                await Task.Delay(TimeSpan.FromSeconds(1));
+                await Task.Delay(TimeSpan.FromSeconds(5));
             }
         }
     }
