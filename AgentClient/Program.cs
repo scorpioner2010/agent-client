@@ -15,10 +15,17 @@ namespace AgentClient
 
         private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(5) };
 
+        // Policy state
         private static DateTimeOffset _allowedUntil = DateTimeOffset.MaxValue;
         private static DateTimeOffset _lastContactOk = DateTimeOffset.MinValue;
 
-        private const string AdminPassword = "JennyBabe"; // TODO: move to secure storage
+        // Server-driven manual unlock grace (minutes)
+        private static int _manualUnlockGraceMinutes = 10;
+
+        // Local override applied after manual unlock while OFFLINE
+        private static DateTimeOffset? _localUnlockUntil = null;
+
+        private const string AdminPassword = "admin123"; // TODO: move to secure storage
         private const string LogFile = "agent.log";
         private static readonly object LogLock = new();
 
@@ -47,6 +54,16 @@ namespace AgentClient
             };
 
             Log("Agent starting...");
+
+            // Subscribe to manual-unlock event: start local offline grace
+            LockScreen.OnUnlocked += () =>
+            {
+                var now = DateTimeOffset.Now;
+                if (_manualUnlockGraceMinutes < 0) _manualUnlockGraceMinutes = 0;
+                _localUnlockUntil = now.AddMinutes(_manualUnlockGraceMinutes);
+                _allowedUntil = _localUnlockUntil.Value; // prevent immediate re-lock
+                Log($"[Local] Manual unlock, grace until {_localUnlockUntil:O} (minutes={_manualUnlockGraceMinutes})");
+            };
 
             string machineName = Environment.MachineName;
             string os = RuntimeInformation.OSDescription;
@@ -79,29 +96,32 @@ namespace AgentClient
 
                     if (resp.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(body))
                     {
-                        try
+                        using var doc = JsonDocument.Parse(body);
+                        if (doc.RootElement.TryGetProperty("policy", out var policy))
                         {
-                            using var doc = JsonDocument.Parse(body);
-                            if (doc.RootElement.TryGetProperty("policy", out var policy))
+                            if (policy.TryGetProperty("allowedUntil", out var auEl) &&
+                                DateTimeOffset.TryParse(auEl.GetString(), out var au))
                             {
-                                if (policy.TryGetProperty("allowedUntil", out var auEl) &&
-                                    DateTimeOffset.TryParse(auEl.GetString(), out var au))
-                                {
-                                    _allowedUntil = au;
-                                }
-                                if (policy.TryGetProperty("requireLock", out var rlEl))
-                                {
-                                    requireLock = rlEl.GetBoolean();
-                                }
+                                _allowedUntil = au;
                             }
-                        }
-                        catch (Exception ex)
-                        {
-                            Log("[Parse warning] " + ex.Message);
+                            if (policy.TryGetProperty("requireLock", out var rlEl))
+                            {
+                                requireLock = rlEl.GetBoolean();
+                            }
+                            if (policy.TryGetProperty("manualUnlockGraceMinutes", out var gEl))
+                            {
+                                var v = gEl.GetInt32();
+                                if (v < 0) v = 0;
+                                if (v > 240) v = 240;
+                                _manualUnlockGraceMinutes = v;
+                            }
                         }
 
                         _lastContactOk = now;
                         sent = true;
+
+                        // When online again, local manual override no longer applies
+                        _localUnlockUntil = null;
                     }
                 }
                 catch (Exception ex)
@@ -115,8 +135,18 @@ namespace AgentClient
                     Log($"[Offline] approx {offlineFor.TotalSeconds:F0}s");
                 }
 
-                // Auto-lock by policy
-                bool shouldLock = requireLock || now >= _allowedUntil;
+                // ---- Lock decision ----
+                bool localOverrideActive = _localUnlockUntil.HasValue && now < _localUnlockUntil.Value;
+
+                bool shouldLock;
+                if (!sent) // OFFLINE: allow local manual-unlock grace to override
+                {
+                    shouldLock = !localOverrideActive && now >= _allowedUntil;
+                }
+                else // ONLINE: server policy dominates
+                {
+                    shouldLock = requireLock || now >= _allowedUntil;
+                }
 
                 if (shouldLock && !LockScreen.IsShown)
                 {
@@ -128,6 +158,7 @@ namespace AgentClient
                     Log("[Policy] HIDE lock screen");
                     LockScreen.Hide();
                 }
+                // -----------------------
 
                 await Task.Delay(TimeSpan.FromSeconds(1));
             }

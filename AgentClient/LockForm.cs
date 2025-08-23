@@ -1,3 +1,4 @@
+using System;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -13,6 +14,8 @@ namespace AgentClient
         private readonly TextBox _tb;
         private readonly Button _btn;
         private bool _allowClose = false;
+
+        public event Action? Unlocked;
 
         public LockForm(string password, string message = "Your time has expired")
         {
@@ -108,7 +111,7 @@ namespace AgentClient
             }
         }
 
-        protected override void OnShown(System.EventArgs e)
+        protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
             Cursor.Hide();
@@ -143,6 +146,7 @@ namespace AgentClient
         {
             if (_tb.Text == _password)
             {
+                Unlocked?.Invoke(); // notify program about manual unlock
                 _allowClose = true;
                 DialogResult = DialogResult.OK;
                 Close();

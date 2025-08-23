@@ -12,6 +12,9 @@ namespace AgentClient
 
         public static bool IsShown { get; private set; }
 
+        // Raised when user enters the correct password on the lock screen
+        public static event Action? OnUnlocked;
+
         public static void Show(string password, string message = "Your time has expired")
         {
             lock (Sync)
@@ -26,6 +29,8 @@ namespace AgentClient
                     Application.SetCompatibleTextRenderingDefault(false);
 
                     _form = new LockForm(password, message);
+                    _form.Unlocked += () => OnUnlocked?.Invoke();
+
                     _form.FormClosed += (_, __) =>
                     {
                         IsShown = false;
