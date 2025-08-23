@@ -1,21 +1,17 @@
 using System;
-using System.Windows.Forms;
+using System.IO;
 using System.Threading;
+using System.Windows.Forms;
 
 namespace AgentClient
 {
-    /// <summary>
-    /// Manages the pill form and the tray icon in a dedicated UI thread.
-    /// Exposes Update/Visibility methods callable from background thread.
-    /// </summary>
     public static class PillTimer
     {
         private static readonly object Sync = new();
         private static Thread? _uiThread;
         private static PillTimerForm? _form;
         private static NotifyIcon? _tray;
-
-        private static int _lastBucket = 3; // 3:>15m, 2:5-15m, 1:1-5m, 0:<1m
+        private static int _lastBucket = 3;
 
         public static bool IsRunning { get; private set; }
 
@@ -28,29 +24,39 @@ namespace AgentClient
 
                 _uiThread = new Thread(() =>
                 {
-                    Application.SetHighDpiMode(HighDpiMode.SystemAware);
-                    Application.EnableVisualStyles();
-                    Application.SetCompatibleTextRenderingDefault(false);
-
-                    _form = new PillTimerForm();
-                    _form.Show();
-
-                    _tray = new NotifyIcon
+                    try
                     {
-                        Icon = System.Drawing.SystemIcons.Information,
-                        Visible = true,
-                        Text = "Time left"
-                    };
+                        // Per-monitor DPI awareness (fixes scaling/position across different resolutions)
+                        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+                        Application.EnableVisualStyles();
+                        Application.SetCompatibleTextRenderingDefault(false);
 
-                    // Simple context menu: show/hide
-                    var menu = new ContextMenuStrip();
-                    menu.Items.Add("Show timer", null, (_, __) => _form?.Invoke(new Action(() => _form!.Show())));
-                    menu.Items.Add("Hide timer", null, (_, __) => _form?.Invoke(new Action(() => _form!.Hide())));
-                    _tray.ContextMenuStrip = menu;
+                        _form = new PillTimerForm();
+                        _form.Show();
 
-                    Application.Run();
-                    _tray.Visible = false;
-                    _tray.Dispose();
+                        _tray = new NotifyIcon
+                        {
+                            Icon = System.Drawing.SystemIcons.Information,
+                            Visible = true,
+                            Text = "Time left"
+                        };
+
+                        var menu = new ContextMenuStrip();
+                        menu.Items.Add("Show timer", null, (_, __) => _form?.Invoke(new Action(() => { _form!.Show(); _form!.Activate(); })));
+                        menu.Items.Add("Hide timer", null, (_, __) => _form?.Invoke(new Action(() => _form!.Hide())));
+                        menu.Items.Add("Reset position", null, (_, __) => _form?.Invoke(new Action(() => _form!.ContextMenuStrip!.Items[0].PerformClick())));
+                        _tray.ContextMenuStrip = menu;
+
+                        Application.Run();
+                    }
+                    catch (Exception ex)
+                    {
+                        try { File.AppendAllText("agent_pill.log", $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} UI error: {ex}\r\n"); } catch { }
+                    }
+                    finally
+                    {
+                        if (_tray != null) { _tray.Visible = false; _tray.Dispose(); }
+                    }
                 });
 
                 _uiThread.SetApartmentState(ApartmentState.STA);
@@ -80,14 +86,11 @@ namespace AgentClient
         {
             lock (Sync)
             {
-                // Update pill text/color
                 if (_form != null)
                 {
-                    try { _form.Invoke(new Action(() => _form.SetDisplay(left, allowedUntil))); }
-                    catch { /* ignore */ }
+                    try { _form.Invoke(new Action(() => _form.SetDisplay(left, allowedUntil))); } catch { }
                 }
 
-                // Update tray tooltip and show one-time warnings on threshold crossings
                 if (_tray != null)
                 {
                     try
@@ -95,18 +98,14 @@ namespace AgentClient
                         string hhmmss = left.TotalHours >= 1
                             ? $"{(int)left.TotalHours:D2}:{left.Minutes:D2}:{left.Seconds:D2}"
                             : $"{left.Minutes:D2}:{left.Seconds:D2}";
-
                         _tray.Text = $"Time left: {hhmmss}";
 
                         int bucket = left.TotalMinutes switch
                         {
-                            < 1 => 0,
-                            < 5 => 1,
-                            < 15 => 2,
-                            _ => 3
+                            < 1 => 0, < 5 => 1, < 15 => 2, _ => 3
                         };
 
-                        if (bucket < _lastBucket) // crossed down
+                        if (bucket < _lastBucket)
                         {
                             string msg = bucket switch
                             {
