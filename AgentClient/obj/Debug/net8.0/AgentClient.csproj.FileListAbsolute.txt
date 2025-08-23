@@ -1,0 +1,14 @@
+A:\Programing\ServerProjects\AgentClient\AgentClient\bin\Debug\net8.0\AgentClient.exe
+A:\Programing\ServerProjects\AgentClient\AgentClient\bin\Debug\net8.0\AgentClient.deps.json
+A:\Programing\ServerProjects\AgentClient\AgentClient\bin\Debug\net8.0\AgentClient.runtimeconfig.json
+A:\Programing\ServerProjects\AgentClient\AgentClient\bin\Debug\net8.0\AgentClient.dll
+A:\Programing\ServerProjects\AgentClient\AgentClient\bin\Debug\net8.0\AgentClient.pdb
+A:\Programing\ServerProjects\AgentClient\AgentClient\obj\Debug\net8.0\AgentClient.GeneratedMSBuildEditorConfig.editorconfig
+A:\Programing\ServerProjects\AgentClient\AgentClient\obj\Debug\net8.0\AgentClient.AssemblyInfoInputs.cache
+A:\Programing\ServerProjects\AgentClient\AgentClient\obj\Debug\net8.0\AgentClient.AssemblyInfo.cs
+A:\Programing\ServerProjects\AgentClient\AgentClient\obj\Debug\net8.0\AgentClient.csproj.CoreCompileInputs.cache
+A:\Programing\ServerProjects\AgentClient\AgentClient\obj\Debug\net8.0\AgentClient.dll
+A:\Programing\ServerProjects\AgentClient\AgentClient\obj\Debug\net8.0\refint\AgentClient.dll
+A:\Programing\ServerProjects\AgentClient\AgentClient\obj\Debug\net8.0\AgentClient.pdb
+A:\Programing\ServerProjects\AgentClient\AgentClient\obj\Debug\net8.0\AgentClient.genruntimeconfig.cache
+A:\Programing\ServerProjects\AgentClient\AgentClient\obj\Debug\net8.0\ref\AgentClient.dll
