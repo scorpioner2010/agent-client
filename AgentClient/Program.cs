@@ -15,53 +15,42 @@ namespace AgentClient
 
         private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(5) };
 
-        // Policy state
         private static DateTimeOffset _allowedUntil = DateTimeOffset.MaxValue;
         private static DateTimeOffset _lastContactOk = DateTimeOffset.MinValue;
 
-        // Server-driven manual unlock grace (minutes)
+        // Optional: server-driven offline manual unlock grace (if you already added earlier)
         private static int _manualUnlockGraceMinutes = 10;
-
-        // Local override applied after manual unlock while OFFLINE
         private static DateTimeOffset? _localUnlockUntil = null;
 
-        private const string AdminPassword = "admin123"; // TODO: move to secure storage
+        private const string AdminPassword = "admin123"; // TODO: secure storage
         private const string LogFile = "agent.log";
         private static readonly object LogLock = new();
 
         private static void Log(string msg)
         {
-            try
-            {
-                lock (LogLock)
-                {
-                    File.AppendAllText(LogFile, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {msg}\r\n");
-                }
-            }
+            try { lock (LogLock) File.AppendAllText(LogFile, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {msg}\r\n"); }
             catch { /* ignore */ }
         }
 
         private static async Task Main(string[] args)
         {
             AppDomain.CurrentDomain.UnhandledException += (s, e) =>
-            {
-                try { File.WriteAllText("agent_crash.log", e.ExceptionObject?.ToString() ?? "null"); } catch {}
-            };
+            { try { File.WriteAllText("agent_crash.log", e.ExceptionObject?.ToString() ?? "null"); } catch {} };
             TaskScheduler.UnobservedTaskException += (s, e) =>
-            {
-                try { File.AppendAllText("agent_crash.log", "\n" + e.Exception); } catch {}
-                e.SetObserved();
-            };
+            { try { File.AppendAllText("agent_crash.log", "\n" + e.Exception); } catch {} e.SetObserved(); };
 
             Log("Agent starting...");
 
-            // Subscribe to manual-unlock event: start local offline grace
+            // Start pill + tray UI thread
+            PillTimer.Start();
+
+            // If you use manual unlock grace (from previous step), wire it:
             LockScreen.OnUnlocked += () =>
             {
                 var now = DateTimeOffset.Now;
                 if (_manualUnlockGraceMinutes < 0) _manualUnlockGraceMinutes = 0;
                 _localUnlockUntil = now.AddMinutes(_manualUnlockGraceMinutes);
-                _allowedUntil = _localUnlockUntil.Value; // prevent immediate re-lock
+                _allowedUntil = _localUnlockUntil.Value; // avoid immediate re-lock while offline
                 Log($"[Local] Manual unlock, grace until {_localUnlockUntil:O} (minutes={_manualUnlockGraceMinutes})");
             };
 
@@ -111,17 +100,14 @@ namespace AgentClient
                             if (policy.TryGetProperty("manualUnlockGraceMinutes", out var gEl))
                             {
                                 var v = gEl.GetInt32();
-                                if (v < 0) v = 0;
-                                if (v > 240) v = 240;
+                                if (v < 0) v = 0; if (v > 240) v = 240;
                                 _manualUnlockGraceMinutes = v;
                             }
                         }
 
                         _lastContactOk = now;
                         sent = true;
-
-                        // When online again, local manual override no longer applies
-                        _localUnlockUntil = null;
+                        _localUnlockUntil = null; // online cancels local override
                     }
                 }
                 catch (Exception ex)
@@ -135,30 +121,30 @@ namespace AgentClient
                     Log($"[Offline] approx {offlineFor.TotalSeconds:F0}s");
                 }
 
-                // ---- Lock decision ----
+                // ---- Lock decision (kept as in your build) ----
                 bool localOverrideActive = _localUnlockUntil.HasValue && now < _localUnlockUntil.Value;
-
-                bool shouldLock;
-                if (!sent) // OFFLINE: allow local manual-unlock grace to override
-                {
-                    shouldLock = !localOverrideActive && now >= _allowedUntil;
-                }
-                else // ONLINE: server policy dominates
-                {
-                    shouldLock = requireLock || now >= _allowedUntil;
-                }
+                bool shouldLock = sent
+                    ? (requireLock || now >= _allowedUntil)        // online: server rules
+                    : (!localOverrideActive && now >= _allowedUntil); // offline: respect local grace
 
                 if (shouldLock && !LockScreen.IsShown)
                 {
                     Log("[Policy] SHOW lock screen");
                     LockScreen.Show(AdminPassword, "Policy: access time finished");
+                    PillTimer.SetVisible(false); // hide pill under lock
                 }
                 else if (!shouldLock && LockScreen.IsShown)
                 {
                     Log("[Policy] HIDE lock screen");
                     LockScreen.Hide();
+                    PillTimer.SetVisible(true);
                 }
-                // -----------------------
+                // -----------------------------------------------
+
+                // --- Update pill + tray ---
+                var left = _allowedUntil - now;
+                PillTimer.Update(left, _allowedUntil);
+                // --------------------------
 
                 await Task.Delay(TimeSpan.FromSeconds(1));
             }
