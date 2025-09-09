@@ -19,7 +19,7 @@ namespace AgentClient
         // Міняй тільки UseLocal: true -> localhost, false -> PROD.
         private const string ServerBaseLocal = "https://localhost:44318";                 // TEST
         private const string ServerBaseProd  = "https://pc-admin-server.onrender.com";    // PROD
-        private const bool UseLocal = true; // <-- вистави true для локального тесту
+        private const bool UseLocal = false; // <-- вистави true для локального тесту
         private static readonly string ServerBase = UseLocal ? ServerBaseLocal : ServerBaseProd;
         // -----------------------------
         // Endpoints

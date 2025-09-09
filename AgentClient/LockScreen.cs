@@ -4,6 +4,12 @@ using System.Windows.Forms;
 
 namespace AgentClient
 {
+    public enum UnlockKind
+    {
+        OnlinePassword,
+        OfflineOverride
+    }
+
     public static class LockScreen
     {
         private static readonly object Sync = new();
@@ -12,17 +18,13 @@ namespace AgentClient
 
         public static bool IsShown { get; private set; }
 
-        // Події:
-        // 1) стара (зворотна сумісність)
-        public static event Action? OnUnlocked;
-        // 2) нова — з інформацією ЯК розблокували
         public static event Action<UnlockKind>? OnUnlockedKind;
 
-        /// <summary>
-        /// Новий рекомендований Show: передаємо поточний серверний пароль і прапорець офлайн-оверрайду.
-        /// offlineOverridePassword за замовчуванням "1111".
-        /// </summary>
-        public static void Show(string serverPassword, bool allowOfflineOverride, string message = "Access is locked", string offlineOverridePassword = "1111")
+        public static void Show(
+            string serverPassword,
+            string message,
+            bool allowOfflineOverride,
+            string offlineOverridePassword)
         {
             lock (Sync)
             {
@@ -36,22 +38,24 @@ namespace AgentClient
                     Application.SetCompatibleTextRenderingDefault(false);
 
                     _form = new LockForm(
-                        serverPassword: serverPassword,
-                        allowOfflineOverride: allowOfflineOverride,
-                        offlineOverridePassword: offlineOverridePassword,
-                        message: message
-                    );
-
-                    // прокидуємо події нагору
-                    _form.Unlocked += () => OnUnlocked?.Invoke();
-                    _form.UnlockedWithKind += kind => OnUnlockedKind?.Invoke(kind);
+                        serverPassword,
+                        message,
+                        allowOfflineOverride,
+                        offlineOverridePassword);
 
                     _form.FormClosed += (_, __) =>
                     {
                         IsShown = false;
                         _form = null;
+                        // Якщо додавав блокери клавіш/вотчер — вимикай тут:
+                        try { KeyboardBlocker.Uninstall(); } catch { }
+                        try { TaskManagerWatcher.Stop(); } catch { }
                         Application.ExitThread();
                     };
+
+                    // Якщо додавав блокери клавіш/вотчер — вмикай тут:
+                    try { KeyboardBlocker.Install(); } catch { }
+                    try { TaskManagerWatcher.Start(); } catch { }
 
                     Application.Run(_form);
                 });
@@ -61,12 +65,6 @@ namespace AgentClient
                 _uiThread.Start();
             }
         }
-
-        /// <summary>
-        /// Старий варіант Show для зворотної сумісності (без офлайн-оверрайду).
-        /// </summary>
-        public static void Show(string password, string message = "Your time has expired")
-            => Show(serverPassword: password, allowOfflineOverride: false, message: message, offlineOverridePassword: "1111");
 
         public static void Hide()
         {
@@ -80,5 +78,8 @@ namespace AgentClient
                 catch { /* ignore */ }
             }
         }
+
+        internal static void RaiseUnlocked(UnlockKind kind)
+            => OnUnlockedKind?.Invoke(kind);
     }
 }
