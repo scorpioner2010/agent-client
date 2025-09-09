@@ -12,10 +12,17 @@ namespace AgentClient
 
         public static bool IsShown { get; private set; }
 
-        // Raised when user enters the correct password on the lock screen
+        // Події:
+        // 1) стара (зворотна сумісність)
         public static event Action? OnUnlocked;
+        // 2) нова — з інформацією ЯК розблокували
+        public static event Action<UnlockKind>? OnUnlockedKind;
 
-        public static void Show(string password, string message = "Your time has expired")
+        /// <summary>
+        /// Новий рекомендований Show: передаємо поточний серверний пароль і прапорець офлайн-оверрайду.
+        /// offlineOverridePassword за замовчуванням "1111".
+        /// </summary>
+        public static void Show(string serverPassword, bool allowOfflineOverride, string message = "Access is locked", string offlineOverridePassword = "1111")
         {
             lock (Sync)
             {
@@ -28,8 +35,16 @@ namespace AgentClient
                     Application.EnableVisualStyles();
                     Application.SetCompatibleTextRenderingDefault(false);
 
-                    _form = new LockForm(password, message);
+                    _form = new LockForm(
+                        serverPassword: serverPassword,
+                        allowOfflineOverride: allowOfflineOverride,
+                        offlineOverridePassword: offlineOverridePassword,
+                        message: message
+                    );
+
+                    // прокидуємо події нагору
                     _form.Unlocked += () => OnUnlocked?.Invoke();
+                    _form.UnlockedWithKind += kind => OnUnlockedKind?.Invoke(kind);
 
                     _form.FormClosed += (_, __) =>
                     {
@@ -37,6 +52,7 @@ namespace AgentClient
                         _form = null;
                         Application.ExitThread();
                     };
+
                     Application.Run(_form);
                 });
 
@@ -45,6 +61,12 @@ namespace AgentClient
                 _uiThread.Start();
             }
         }
+
+        /// <summary>
+        /// Старий варіант Show для зворотної сумісності (без офлайн-оверрайду).
+        /// </summary>
+        public static void Show(string password, string message = "Your time has expired")
+            => Show(serverPassword: password, allowOfflineOverride: false, message: message, offlineOverridePassword: "1111");
 
         public static void Hide()
         {
