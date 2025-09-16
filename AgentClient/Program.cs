@@ -1,28 +1,24 @@
 ﻿using System;
-using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
-using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
-using System.Windows.Forms;
 
 namespace AgentClient
 {
     internal static class Program
     {
-        // -----------------------------
-        // SERVER BASES + TOGGLE
-        // Завжди є тестове поле (LOCAL).
-        // Міняй тільки UseLocal: true -> localhost, false -> PROD.
-        private const string ServerBaseLocal = "https://localhost:44318";                 // TEST
-        private const string ServerBaseProd  = "https://pc-admin-server.onrender.com";    // PROD
-        private const bool UseLocal = false; // <-- вистави true для локального тесту
-        private static readonly string ServerBase = UseLocal ? ServerBaseLocal : ServerBaseProd;
-        // -----------------------------
-        // Endpoints
+        // ===== Server base =====
+        private const string PROD_BASE = "https://pc-admin-server.onrender.com";
+        private const string LOCAL_BASE = "https://localhost:44318";
+
+        // Вибери потрібне:
+        private const string ServerBase = LOCAL_BASE; // локальні тести
+        // private const string ServerBase = PROD_BASE; // прод
+
+        // --- Server endpoints ---
         private static readonly Uri StatusEndpoint = new Uri($"{ServerBase}/api/agent/status");
         private static readonly Uri UnlockEndpoint = new Uri($"{ServerBase}/api/agent/unlock");
 
@@ -31,12 +27,13 @@ namespace AgentClient
         // --- Policy state (from server) ---
         private static DateTimeOffset _allowedUntil = DateTimeOffset.MaxValue;
         private static DateTimeOffset _lastContactOk = DateTimeOffset.MinValue;
-        private static int _manualUnlockGraceMinutes = 60;         // "Password time" from server
-        private static string _serverUnlockPassword = "admin123";  // delivered by server in /status
+        private static int _manualUnlockGraceMinutes = 60;
+        private static string _serverUnlockPassword = "7789Saurex";
+        private static int _serverVolumePercent = 50;
 
         // --- Local override (used only when offline) ---
         private static DateTimeOffset? _localUnlockUntil = null;
-        private const string OfflineOverridePassword = "1111";     // if offline, fully unlock
+        private const string OfflineOverridePassword = "1111";
         private static readonly TimeSpan OfflineOverrideDuration = TimeSpan.FromHours(10);
 
         // --- Misc ---
@@ -54,20 +51,19 @@ namespace AgentClient
         private static async Task Main(string[] args)
         {
             AppDomain.CurrentDomain.UnhandledException += (s, e) =>
-            { try { File.WriteAllText("agent_crash.log", e.ExceptionObject?.ToString() ?? "null"); } catch {} };
+            { try { File.WriteAllText("agent_crash.log", e.ExceptionObject?.ToString() ?? "null"); } catch { } };
             TaskScheduler.UnobservedTaskException += (s, e) =>
-            { try { File.AppendAllText("agent_crash.log", "\n" + e.Exception); } catch {} e.SetObserved(); };
+            { try { File.AppendAllText("agent_crash.log", "\n" + e.Exception); } catch { } e.SetObserved(); };
 
-            Log("Agent starting... ServerBase=" + ServerBase);
+            Log("Agent starting...");
 
-            // Start pill (always-on-top timer) + tray
             PillTimer.Start();
-
-            // Subscribe to lock-screen events: online unlock or offline override
             LockScreen.OnUnlockedKind += kind => _ = HandleUnlockedAsync(kind);
 
             _machineName = Environment.MachineName;
             _os = RuntimeInformation.OSDescription;
+
+            int currentVol = VolumeController.TryGetVolumePercent() ?? -1;
 
             while (true)
             {
@@ -79,7 +75,8 @@ namespace AgentClient
                     Machine = _machineName,
                     OS = _os,
                     UptimeSec = uptimeSeconds,
-                    Time = now.ToString("O")
+                    Time = now.ToString("O"),
+                    VolumePercent = currentVol // телеметрія (адмін все одно диктує зверху)
                 };
 
                 string json = JsonSerializer.Serialize(payload);
@@ -99,50 +96,71 @@ namespace AgentClient
                     {
                         using var doc = JsonDocument.Parse(body);
 
-                        // --- Policy ---
+                        // ---- policy ----
                         if (doc.RootElement.TryGetProperty("policy", out var policy))
                         {
                             if (policy.TryGetProperty("allowedUntil", out var auEl) &&
                                 DateTimeOffset.TryParse(auEl.GetString(), out var au))
-                            {
                                 _allowedUntil = au;
-                            }
+
                             if (policy.TryGetProperty("requireLock", out var rlEl))
-                            {
                                 requireLock = rlEl.GetBoolean();
-                            }
+
                             if (policy.TryGetProperty("manualUnlockGraceMinutes", out var gEl))
                             {
                                 var v = gEl.GetInt32();
                                 if (v < 0) v = 0; if (v > 240) v = 240;
                                 _manualUnlockGraceMinutes = v;
                             }
+
                             if (policy.TryGetProperty("unlockPassword", out var pwdEl))
+                                _serverUnlockPassword = pwdEl.GetString() ?? _serverUnlockPassword;
+
+                            if (policy.TryGetProperty("volumePercent", out var volEl))
                             {
-                                _serverUnlockPassword = pwdEl.GetString() ?? "";
+                                var v = volEl.GetInt32();
+                                _serverVolumePercent = Math.Clamp(v, 0, 100);
                             }
                         }
 
-                        // --- One-shot command from server ---
-                        if (doc.RootElement.TryGetProperty("command", out var cmdEl) &&
-                            cmdEl.ValueKind == JsonValueKind.String)
+                        // ---- commands (миттєва реакція) ----
+                        if (doc.RootElement.TryGetProperty("commands", out var commandsEl) &&
+                            commandsEl.ValueKind == JsonValueKind.Array)
                         {
-                            var cmd = cmdEl.GetString();
-                            if (!string.IsNullOrWhiteSpace(cmd))
+                            foreach (var c in commandsEl.EnumerateArray())
                             {
-                                Log("[Command] received: " + cmd);
-                                _ = ExecuteCommandAsync(cmd!); // fire & forget
+                                int type = c.TryGetProperty("type", out var t) ? t.GetInt32() : 0;
+                                if (type == 2) // SetVolume
+                                {
+                                    if (c.TryGetProperty("intValue", out var iv) && iv.ValueKind == JsonValueKind.Number)
+                                    {
+                                        var val = Math.Clamp(iv.GetInt32(), 0, 100);
+                                        ForceApplyVolume(val);
+                                        _serverVolumePercent = val;
+                                    }
+                                }
+                                else if (type == 1) // Shutdown
+                                {
+                                    ForceShutdown.Now();
+                                }
                             }
                         }
 
-                        _lastContactOk = now;
                         sent = true;
-                        _localUnlockUntil = null; // when back online, local override is cleared
+                        _lastContactOk = now;
+                        _localUnlockUntil = null;
                     }
                 }
                 catch (Exception ex)
                 {
                     Log("[Send error] " + ex.Message);
+                }
+
+                // Адмін диктує: на КОЖНЕ успішне оновлення — форс ставимо гучність
+                if (sent)
+                {
+                    ForceApplyVolume(_serverVolumePercent);
+                    currentVol = VolumeController.TryGetVolumePercent() ?? currentVol;
                 }
 
                 if (!sent)
@@ -151,16 +169,15 @@ namespace AgentClient
                     Log($"[Offline] approx {offlineFor.TotalSeconds:F0}s");
                 }
 
-                // ---- Lock decision ----
                 bool localOverrideActive = _localUnlockUntil.HasValue && now < _localUnlockUntil.Value;
                 bool shouldLock = sent
-                    ? (requireLock || now >= _allowedUntil)          // ONLINE: server rules
-                    : (!localOverrideActive && now >= _allowedUntil);// OFFLINE: allow local override
+                    ? (requireLock || now >= _allowedUntil)
+                    : (!localOverrideActive && now >= _allowedUntil);
 
                 if (shouldLock && !LockScreen.IsShown)
                 {
                     Log("[Policy] SHOW lock screen");
-                    var allowOfflineOverride = !sent; // allow 1111 only if offline now
+                    var allowOfflineOverride = !sent;
                     LockScreen.Show(
                         serverPassword: _serverUnlockPassword,
                         allowOfflineOverride: allowOfflineOverride,
@@ -176,7 +193,6 @@ namespace AgentClient
                     PillTimer.SetVisible(true);
                 }
 
-                // --- Update pill + tray ---
                 var left = _allowedUntil - now;
                 PillTimer.Update(left, _allowedUntil);
 
@@ -184,9 +200,28 @@ namespace AgentClient
             }
         }
 
-        /// <summary>
-        /// Reacts to unlock path: server password (online) or offline override.
-        /// </summary>
+        /// <summary>Безумовне застосування гучності з розм'ютом.</summary>
+        private static void ForceApplyVolume(int percent)
+        {
+            try
+            {
+                int p = Math.Clamp(percent, 0, 100);
+                VolumeController.TryUnmute();
+                if (VolumeController.TrySetVolumePercent(p))
+                {
+                    Log($"[Volume] forced {p}%");
+                }
+                else
+                {
+                    Log("[Volume] force apply failed");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("[Volume] error: " + ex.Message);
+            }
+        }
+
         private static async Task HandleUnlockedAsync(UnlockKind kind)
         {
             try
@@ -195,7 +230,6 @@ namespace AgentClient
 
                 if (kind == UnlockKind.OnlinePassword)
                 {
-                    // Ask server to grant "Password time" from now
                     Log("[Unlock] Online password entered → POST /unlock");
                     try
                     {
@@ -212,17 +246,18 @@ namespace AgentClient
                         if (resp.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(body))
                         {
                             using var doc = JsonDocument.Parse(body);
-                            if (doc.RootElement.TryGetProperty("policy", out var p) &&
-                                p.TryGetProperty("allowedUntil", out var auEl) &&
-                                DateTimeOffset.TryParse(auEl.GetString(), out var au))
+                            if (doc.RootElement.TryGetProperty("policy", out var p))
                             {
-                                _allowedUntil = au;
+                                if (p.TryGetProperty("allowedUntil", out var auEl) &&
+                                    DateTimeOffset.TryParse(auEl.GetString(), out var au))
+                                {
+                                    _allowedUntil = au;
+                                }
                             }
-                            _localUnlockUntil = null; // server took over
+                            _localUnlockUntil = null;
                             return;
                         }
 
-                        // Fallback if unlock call failed:
                         Log("[Unlock] Server unlock failed, applying local grace fallback");
                         _localUnlockUntil = now.AddMinutes(_manualUnlockGraceMinutes);
                         _allowedUntil = _localUnlockUntil.Value;
@@ -236,7 +271,6 @@ namespace AgentClient
                 }
                 else if (kind == UnlockKind.OfflineOverride)
                 {
-                    // Full offline unlock for 10 hours
                     Log("[Unlock] Offline override accepted → 10h local grace");
                     _localUnlockUntil = now.Add(OfflineOverrideDuration);
                     _allowedUntil = _localUnlockUntil.Value;
@@ -246,86 +280,6 @@ namespace AgentClient
             {
                 Log("[Unlock] Handler error: " + ex.Message);
             }
-        }
-
-        /// <summary>
-        /// Execute one-shot command received from server.
-        /// </summary>
-        private static async Task ExecuteCommandAsync(string cmd)
-        {
-            cmd = cmd.Trim().ToLowerInvariant();
-            try
-            {
-                switch (cmd)
-                {
-                    case "sleep":
-                        Log("[Command] executing sleep");
-                        await SleepAsync();
-                        break;
-
-                    case "shutdown":
-                        Log("[Command] executing shutdown (10s)");
-                        await ShutdownAsync();
-                        break;
-
-                    default:
-                        Log("[Command] unknown: " + cmd);
-                        break;
-                }
-            }
-            catch (Exception ex)
-            {
-                Log("[Command] error: " + ex.Message);
-            }
-        }
-
-        [SupportedOSPlatform("windows")]
-        private static Task SleepAsync()
-        {
-            try
-            {
-                Application.SetSuspendState(PowerState.Suspend, true, false);
-            }
-            catch
-            {
-                try
-                {
-                    var psi = new ProcessStartInfo
-                    {
-                        FileName = "rundll32",
-                        Arguments = "powrprof.dll,SetSuspendState 0,1,0",
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
-                    Process.Start(psi);
-                }
-                catch (Exception ex2)
-                {
-                    Log("[Sleep fallback] " + ex2.Message);
-                }
-            }
-            return Task.CompletedTask;
-        }
-
-        [SupportedOSPlatform("windows")]
-        private static Task ShutdownAsync()
-        {
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "shutdown",
-                    Arguments = "/s /t 10 /f",
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                Process.Start(psi);
-            }
-            catch (Exception ex)
-            {
-                Log("[Shutdown] " + ex.Message);
-            }
-            return Task.CompletedTask;
         }
     }
 }
