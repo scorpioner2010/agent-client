@@ -4,11 +4,11 @@ using System.Runtime.InteropServices;
 namespace AgentClient
 {
     /// <summary>
-    /// Простий і надійний контролер системної гучності (Windows CoreAudio) без зовнішніх пакетів.
-    /// Стабільний варіант:
-    /// - НІЯКИХ COM-нотифікацій.
-    /// - На кожному виклику ми заново підключаємось до поточного default render endpoint.
-    /// - Завжди знімаємо Mute перед встановленням рівня.
+    /// Контролер системної гучності (Windows CoreAudio) без зовнішніх пакетів.
+    /// Стабільний і «анти-моно»: при установці рівня нормалізуємо всі канали (L/R).
+    /// - Без нотифікацій.
+    /// - На кожен виклик перепідключаємося до актуального default render endpoint.
+    /// - Завжди знімаємо mute перед установкою.
     /// </summary>
     public static class VolumeController
     {
@@ -17,7 +17,7 @@ namespace AgentClient
         {
             try
             {
-                var ep = BindEndpoint();               // кожен раз отримуємо свіжий endpoint
+                var ep = BindEndpoint();
                 ep.GetMasterVolumeLevelScalar(out float scalar);
                 return (int)Math.Round(scalar * 100f);
             }
@@ -36,16 +36,14 @@ namespace AgentClient
                 ep.SetMute(0, Guid.Empty); // 0 == FALSE
                 return true;
             }
-            catch
-            {
-                return false;
-            }
+            catch { return false; }
         }
 
         /// <summary>
-        /// Встановлює гучність у % (0..100):
+        /// Встановлює гучність у % (0..100) і вирівнює канали:
         /// - знімає mute;
-        /// - ставить master scalar.
+        /// - ставить master scalar;
+        /// - ставить channel scalar для кожного каналу (якщо їх > 1).
         /// </summary>
         public static bool TrySetVolumePercent(int percent)
         {
@@ -55,14 +53,52 @@ namespace AgentClient
                 float scalar = p / 100f;
 
                 var ep = BindEndpoint();
+
+                // Знімаємо mute перед застосуванням
                 try { ep.SetMute(0, Guid.Empty); } catch { /* ignore */ }
+
+                // Master
                 ep.SetMasterVolumeLevelScalar(scalar, Guid.Empty);
+
+                // Канали (ліва/права й інші, якщо є)
+                try
+                {
+                    ep.GetChannelCount(out uint chCount);
+                    if (chCount > 1)
+                    {
+                        for (uint ch = 0; ch < chCount; ch++)
+                            ep.SetChannelVolumeLevelScalar(scalar, ch, Guid.Empty);
+                    }
+                }
+                catch { /* каналів може не бути або інтерфейс забороняє — ігноруємо */ }
+
                 return true;
             }
             catch
             {
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Нормалізує баланс каналів під поточний master (ставить однаковий scalar на всі канали).
+        /// Корисно, якщо правий/лівий «провисає» при незмінному master.
+        /// </summary>
+        public static bool TryNormalizeChannels()
+        {
+            try
+            {
+                var ep = BindEndpoint();
+                ep.GetMasterVolumeLevelScalar(out float scalar);
+                ep.GetChannelCount(out uint chCount);
+                if (chCount > 1)
+                {
+                    for (uint ch = 0; ch < chCount; ch++)
+                        ep.SetChannelVolumeLevelScalar(scalar, ch, Guid.Empty);
+                }
+                return true;
+            }
+            catch { return false; }
         }
 
         // ===== Helpers =====
@@ -78,6 +114,7 @@ namespace AgentClient
         }
 
         // ===== COM interop =====
+
         private enum EDataFlow { eRender, eCapture, eAll }
         private enum ERole { eConsole, eMultimedia, eCommunications }
 
@@ -116,27 +153,37 @@ namespace AgentClient
         }
 
         /// <summary>
-        /// УВАГА: порядок методів у цьому інтерфейсі має точно відповідати vtable IAudioEndpointVolume.
-        /// Ми оголошуємо лише ті, що реально викликаємо, і в правильній послідовності.
-        /// Ця мінімальна версія — перевірена й стабільна.
+        /// ВАЖЛИВО: порядок методів повинен відповідати фактичному порядку у vtable IAudioEndpointVolume.
+        /// Тому тут наведено послідовність згідно з CoreAudio API (без пропусків до використовуваних нами методів).
         /// </summary>
         [ComImport]
         [Guid("5CDF2C82-841E-4546-9722-0CF74078229A")]
         [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
         private interface IAudioEndpointVolume
         {
-            int RegisterControlChangeNotify(IntPtr pNotify);        // not used
-            int UnregisterControlChangeNotify(IntPtr pNotify);      // not used
-            int GetChannelCount(out uint pnChannelCount);           // not used
-
-            int SetMasterVolumeLevel(float fLevelDB, Guid pguidEventContext); // not used
+            // 1–7: master + базове
+            int RegisterControlChangeNotify(IntPtr pNotify);
+            int UnregisterControlChangeNotify(IntPtr pNotify);
+            int GetChannelCount(out uint pnChannelCount);
+            int SetMasterVolumeLevel(float fLevelDB, Guid pguidEventContext);
             void SetMasterVolumeLevelScalar(float fLevel, Guid pguidEventContext);
-
-            int GetMasterVolumeLevel(out float pfLevelDB);          // not used
+            int GetMasterVolumeLevel(out float pfLevelDB);
             void GetMasterVolumeLevelScalar(out float pfLevel);
 
+            // 8–11: канали (нам потрібні Scalar-set і Get)
+            int SetChannelVolumeLevel(uint nChannel, float fLevelDB, Guid pguidEventContext);
+            void SetChannelVolumeLevelScalar(float fLevel, uint nChannel, Guid pguidEventContext);
+            int GetChannelVolumeLevel(uint nChannel, out float pfLevelDB);
+            void GetChannelVolumeLevelScalar(uint nChannel, out float pfLevel);
+
+            // 12–18: mute/step/range (використовуємо лише mute)
             void SetMute(int bMute, Guid pguidEventContext);
             void GetMute(out int pbMute);
+            int GetVolumeStepInfo(out uint pnStep, out uint pnStepCount);
+            int VolumeStepUp(Guid pguidEventContext);
+            int VolumeStepDown(Guid pguidEventContext);
+            int QueryHardwareSupport(out uint pdwHardwareSupportMask);
+            int GetVolumeRange(out float pflVolumeMindB, out float pflVolumeMaxdB, out float pflVolumeIncrementdB);
         }
     }
 }

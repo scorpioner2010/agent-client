@@ -12,7 +12,7 @@ using System.Reflection;
 
 [assembly: System.Reflection.AssemblyCompanyAttribute("AgentClient")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+5f0fd737eec0281e194d3001d72c412bcd2fa90a")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+97bc91a76f33575a1660a536a215b6c207874dbd")]
 [assembly: System.Reflection.AssemblyProductAttribute("AgentClient")]
 [assembly: System.Reflection.AssemblyTitleAttribute("AgentClient")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
